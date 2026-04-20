@@ -323,7 +323,7 @@ def get_uploaded_file(filename):
 
     # send_from_directory היא פונקציה מאובטחת של Flask
     # היא ניגשת לתיקייה שהגדרנו (UPLOAD_FOLDER) ושולחת את הקובץ הפיזי למשתמש
-    return send_from_directory(UPLOAD_FOLDER, filename)
+    return send_from_directory(UPLOAD_FOLDER, filename, mimetype='image/jpeg')
 
 
 # נתיב לקבלת כל המתכונים הקיימים במערכת
