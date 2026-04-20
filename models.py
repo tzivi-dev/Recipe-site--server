@@ -1,85 +1,78 @@
-# Recipe Sharing Platform
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+import json # נשתמש בזה לשמירת variation_paths כ-JSON
 
-## Overview
-A full-stack web application for sharing and discovering recipes. Users can browse and search recipes by available ingredients, while approved contributors can upload their own. Built with a Python/Flask backend and an Angular frontend.
+# יצירת אובייקט ה-DB שבו נשתמש גם ב-app.py
+db = SQLAlchemy()
 
-## Core Capabilities
 
-- **Authentication & Authorization** — JWT-based stateless authentication. Role-based access control across three tiers: Reader, Uploader, and Admin. Decorator-enforced permissions on all protected server routes.
-- **Ingredient-Based Search** — Users input ingredients they have on hand; the server computes a match score for every recipe and returns results sorted by relevance. Recipes below 20% match are filtered out.
-- **Recipe Gallery** — Browse all recipes with filtering by type (Dairy, Meat, Parve), and prep time. Sortable by prep time or alphabetically (A-Z).
-- **Image Processing Pipeline** — Each uploaded image is automatically processed into three variants (greyscale, rotated, sharpened) using Pillow. All four files are stored server-side and served as a per-recipe gallery.
-- **Upload Approval Flow** — Users can request upload permissions. Admins review and approve requests from a dedicated management panel.
+# --- מחלקת הבסיס (BaseModel) ---
+class BaseModel(db.Model):
+    """
+    מחלקה אבסטרקטית שמגדירה את עמודת ה-ID ופעולת השמירה
+    עבור כל הטבלאות במערכת.
+    """
+    # אומר ל-SQLAlchemy לא ליצור טבלה עבור המחלקה הזו ב-DB, אלא רק להוריש את התכונות שלה למחלקות הבנות.
+    __abstract__ = True  # אומר ל-SQLAlchemy לא ליצור טבלה עבור המחלקה הזו, אלא רק עבור היורשים
+    # עמודת מזהה יחיד לכל רשומה. db.Column מגדיר עמודה בטבלה. primary_key=True מגדיר את העמודה כמפתח ראשי ומוודא שהיא ייחודית.
+    id = db.Column(db.Integer, primary_key=True)
 
-## Technology Stack
+    def save(self):
+        """שומר את האובייקט הנוכחי למסד הנתונים"""
+        db.session.add(self)  # מוסיף את אובייקט הפייתון הנוכחי (self) ל-"סשן" (הקשר) של מסד הנתונים.
+        db.session.commit()  # מבצע את השינויים בסשן ושומר אותם לצמיתות ב-DB.
 
-- **Backend:** Python 3, Flask, SQLAlchemy (ORM), SQLite
-- **Frontend:** Angular
-- **Security:** Flask-Bcrypt, PyJWT, Flask-CORS
-- **Media Processing:** Pillow (PIL)
-- **Configuration:** python-dotenv
 
-## Directory Structure
+# --- מודל משתמש (User) ---
+class User(BaseModel):# יורש מ-BaseModel, ולכן מקבל אוטומטית את עמודת ה-ID ואת מתודת save().
+    __tablename__ = 'users'# שם הטבלה במסד הנתונים יהיה 'users'.
+#בדיקות תקינות
+    email = db.Column(db.String(120), unique=True,nullable=False)  # עמודת מייל. String(120) מגביל את אורכה ל-120 תווים. unique=True אוכף שלא יהיו שני מיילים זהים. nullable=False אומר שערך זה חובה.
+    password = db.Column(db.String(200), nullable=False)  # עמודת הסיסמה המגובבת. אורך 200 מספיק לגיבוב Bcrypt.
+    role = db.Column(db.String(20), default='Reader')  # תפקיד המשתמש (Admin, Uploader, Reader). default='Reader' מגדיר את ערך ברירת המחדל.
+    is_approved_uploader = db.Column(db.Boolean, default=False)  # שדה בוליאני (True/False) שמציין האם המשתמש אושר להעלות מתכונים.
+    request_date = db.Column(db.DateTime, nullable=True)   # שדה שמתעד את זמן בקשת ההרשאה. כברירת מחדל הוא ריק (None)
+    recipes = db.relationship('Recipe', backref='author', lazy=True)# קשר למתכונים שהמשתמש העלה (אופציונלי, עוזר לשלוף מתכונים של משתמש)
+# backref='author': מוסיף באופן אוטומטי עמודה בשם 'author' למחלקת Recipe, המפנה לאובייקט המשתמש.
+    # lazy=True: טוען את רשימת המתכונים רק כשצריך (טעינה עצלה).
 
-```
-.
-├── server/
-│   ├── app.py               # Entry point and route definitions
-│   ├── models.py            # SQLAlchemy ORM models
-│   ├── uploads/             # Stored images (original + 3 variants per recipe)
-│   ├── instance/
-│   │   └── recipes.db       # SQLite database
-│   └── .env                 # Environment variables (not committed)
-└── client/                  # Angular frontend application
-```
+# --- מודל מתכון (Recipe) ---
+class Recipe(BaseModel):
+    __tablename__ = 'recipes'
 
-## Setup & Installation
+    title = db.Column(db.String(100), nullable=False)  # שם המתכון.
+    description = db.Column(db.Text, nullable=True)  # עמודת טקסט ארוך להוראות הכנה.
+    image_path = db.Column(db.String(200), nullable=False)  # נתיב לקובץ התמונה המקורי (בתיקיית uploads).
+    variation_paths = db.Column(db.Text, nullable=True)  # עמודת טקסט לשמירת נתיבי 3 תמונות הווריאציה. יישמר כ-JSON String.
+    type = db.Column(db.String(20), nullable=False)  # סוג המתכון: Dairy, Meat, Parve.
+    prep_time = db.Column(db.Integer, default=0)  # זמן הכנה בדקות
+    # מפתח זר למשתמש שיצר את המתכון
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    # קשר לרכיבים (One-to-Many - מתכון אחד יכול להכיל רשימת רכיבים רבים)
+    # קשר מטבלת Recipe לטבלת IngredientEntry.
+    ingredients = db.relationship('IngredientEntry', backref='recipe', lazy=True, cascade="all, delete-orphan")
+    # cascade="all, delete-orphan": הגדרה חשובה: אם מתכון נמחק, כל רשומות ה-IngredientEntry המקושרות אליו נמחקות אוטומטית (ניקיון DB).
 
-**Prerequisites:** Python 3.8+ and pip.
+    def set_variations(self, paths_list):
+        """פונקציית עזר לשמירת רשימת הנתיבים כ-JSON"""
+        self.variation_paths = json.dumps(paths_list)
 
-1. Install dependencies:
+    def get_variations(self):
+        """פונקציית עזר לקבלת הנתיבים כרשימה"""
+        if self.variation_paths:
+            return json.loads(self.variation_paths)
+        return []
 
-```bash
-pip install -r requirements.txt
-```
 
-2. Create a `.env` file in the server directory:
+# --- מודל רכיב (IngredientEntry) ---
 
-```
-SECRET_KEY=your_secure_randomized_string_here
-```
+class IngredientEntry(BaseModel):
+    __tablename__ = 'ingredients'
 
-3. Run the server:
+    product = db.Column(db.String(100), nullable=False)  # שם הרכיב (קמח, ביצים)
+    amount = db.Column(db.Float, nullable=False)  # כמות (1.5)
+    unit = db.Column(db.String(50), nullable=False)  # יחידה (כוס, גרם)
 
-```bash
-python app.py
-```
-
-On first run, the database schema is created automatically and a default admin account is provisioned.
-
-## Default Admin Account
-
-- **Email:** admin@example.com
-- **Password:** Admin123!
-
-Change these credentials before any non-development deployment.
-
-## API Reference
-
-**Authentication**
-- `POST /register` — Register a new user account.
-- `POST /login` — Authenticate and receive a JWT.
-
-**Recipes**
-- `GET /recipes` — Retrieve all recipes (summary view).
-- `GET /recipes/<id>` — Retrieve full recipe details including image variants.
-- `POST /recipes` — Add a new recipe with image upload *(Uploader / Admin only)*.
-- `DELETE /recipes/<id>` — Delete a recipe and its associated files *(Admin only)*.
-
-**Search**
-- `POST /search/ingredients` — Search recipes by ingredient list; returns scored, sorted results.
-
-**Admin**
-- `GET /admin/requests` — View pending uploader permission requests *(Admin only)*.
-- `POST /admin/requests` — Approve a user's upload request *(Admin only)*.
-- `POST /request-upload-permission` — Submit a permission request *(authenticated users)*.
+    # מפתח זר למתכון
+    # זהו המפתח הזר שמקשר כל רכיב למתכון ספציפי (דרוש לקשר One-to-Many).
+    recipe_id = db.Column(db.Integer, db.ForeignKey('recipes.id'), nullable=False)
